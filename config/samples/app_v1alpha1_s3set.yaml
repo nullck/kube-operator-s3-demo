@@ -1,0 +1,7 @@
+apiVersion: app.example.com/v1alpha1
+kind: S3Set
+metadata:
+  name: s3set-sample
+spec:
+  # Add fields here
+  foo: bar

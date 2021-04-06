@@ -1,0 +1,20 @@
+# permissions for end users to view s3sets.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: s3set-viewer-role
+rules:
+- apiGroups:
+  - app.example.com
+  resources:
+  - s3sets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - app.example.com
+  resources:
+  - s3sets/status
+  verbs:
+  - get

@@ -1,0 +1,24 @@
+# permissions for end users to edit s3sets.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: s3set-editor-role
+rules:
+- apiGroups:
+  - app.example.com
+  resources:
+  - s3sets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - app.example.com
+  resources:
+  - s3sets/status
+  verbs:
+  - get
