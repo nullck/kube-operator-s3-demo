@@ -20,22 +20,23 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
-
-	"github.com/go-logr/logr"
-	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
-	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/endpoints"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/go-logr/logr"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	appv1alpha1 "github.com/nullck/kube-operator-s3-demo/api/v1alpha1"
 )
+
+const s3setFinalizer = "cache.example.com/finalizer"
 
 // S3SetReconciler reconciles a S3Set object
 type S3SetReconciler struct {
@@ -59,6 +60,7 @@ type S3SetReconciler struct {
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.7.2/pkg/reconcile
 func (r *S3SetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log.WithValues("s3set", req.NamespacedName)
+	svc := r.createBucketInput()
 	s3set := &appv1alpha1.S3Set{}
 	err := r.Get(ctx, req.NamespacedName, s3set)
 	if err != nil {
@@ -74,18 +76,49 @@ func (r *S3SetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, err
 	}
 
-	svc := r.createBucketInput()
+	// Add finalizer for this CR
+	if !controllerutil.ContainsFinalizer(s3set, s3setFinalizer) {
+		controllerutil.AddFinalizer(s3set, s3setFinalizer)
+		log.Info("Adding Finalizer ...")
+		err = r.Update(ctx, s3set)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	// controller logic
 	result := r.listBucket(svc, s3set.Spec.BucketName)
 	if result != true {
 		log.Info("Creating a new s3 Bucket")
 		err = r.createBucket(svc, s3set.Spec.BucketName)
 		if err != nil {
-			log.Error(err, "Error bucket not founded")
+			log.Error(err, "Error bucket already exists")
 		}
-		// requeue
-		return ctrl.Result{Requeue: true}, nil
 	}
-	return ctrl.Result{RequeueAfter: time.Minute * 10}, nil
+
+	isS3SetMarkedToBeDeleted := s3set.GetDeletionTimestamp() != nil
+	if isS3SetMarkedToBeDeleted {
+		if controllerutil.ContainsFinalizer(s3set, s3setFinalizer) {
+			result = r.listBucket(svc, s3set.Spec.BucketName)
+			if result != false {
+				log.Info("Deleting bucket ...")
+				err = r.deleteBucket(svc, s3set.Spec.BucketName)
+				if err != nil {
+					log.Error(err, "Error bucket not founded")
+				}
+			}
+			// Remove s3setFinalizer. Once all finalizers have been
+			// removed, the object will be deleted.
+			controllerutil.RemoveFinalizer(s3set, s3setFinalizer)
+			log.Info("Removing Finalizer ...")
+			err := r.Update(ctx, s3set)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
+	}
+	log.Info("Finish ...")
+	return ctrl.Result{}, nil
 }
 
 func (r *S3SetReconciler) createBucketInput() *s3.S3 {
@@ -121,25 +154,25 @@ func (r *S3SetReconciler) createBucket(svc *s3.S3, bucketName string) error {
 	return nil
 }
 
-//func (r *S3SetReconciler) deleteBucket(svc *s3.S3, bucketName string) {
-//	input := &s3.CreateBucketInput{
-//		Bucket: aws.String(bucketName),
-//	}
-//
-//	result, err := svc.CreateBucket(input)
-//	if err != nil {
-//		if aerr, ok := err.(awserr.Error); ok {
-//			switch aerr.Code() {
-//			default:
-//				fmt.Println(aerr.Error())
-//			}
-//		} else {
-//			fmt.Println(err.Error())
-//		}
-//		return
-//	}
-//	fmt.Println(result)
-//}
+func (r *S3SetReconciler) deleteBucket(svc *s3.S3, bucketName string) error {
+	input := &s3.DeleteBucketInput{
+		Bucket: aws.String(bucketName),
+	}
+
+	_, err := svc.DeleteBucket(input)
+	if err != nil {
+		if aerr, ok := err.(awserr.Error); ok {
+			switch aerr.Code() {
+			default:
+				fmt.Println(aerr.Error())
+			}
+		} else {
+			fmt.Println(err.Error())
+		}
+		return err
+	}
+	return nil
+}
 
 func (r *S3SetReconciler) listBucket(svc *s3.S3, bucketName string) bool {
 	input := &s3.ListBucketsInput{}
